@@ -43,7 +43,7 @@ namespace
 
     void read_infos(Options& options)
     {
-        const std::string path = options.tmp_dir + "infos.bin";
+        const std::string path = options.res_dir + "infos.bin";
         if (input_size(path) != 8) throw std::runtime_error("invalid infos.bin size");
         uint32_t fields[2]{};
         std::ifstream input(path, std::ios::binary);
@@ -70,14 +70,14 @@ namespace
 
 int run_histogram_tool(Options options)
 {
-    if (options.tmp_dir.empty()) options.tmp_dir = "./";
-    if (options.tmp_dir.back() != '/') options.tmp_dir += '/';
+    if (options.res_dir.empty()) options.res_dir = "./";
+    if (options.res_dir.back() != '/') options.res_dir += '/';
     if (options.max_freq < options.min_freq)
         throw std::runtime_error("invalid histogram frequency range");
     read_infos(options);
 
-    const std::string high_path = options.tmp_dir + "high.bin";
-    const std::string low_path = options.tmp_dir + "low.bin";
+    const std::string high_path = options.res_dir + "high.bin";
+    const std::string low_path = options.res_dir + "low.bin";
     const bool include_singletons = options.min_freq <= 1 && options.max_freq >= 1;
     uint64_t total_bytes = input_size(high_path);
     if (include_singletons) total_bytes += input_size(low_path);

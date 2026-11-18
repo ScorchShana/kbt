@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.10)
-project(Tree LANGUAGES CXX)
+project(kbt LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON) # if compiler doesn't support C++20, then error
 
 include(CheckIncludeFileCXX)
 
 enable_testing()
-option(TEST_MODE "Enable diagnostic statistics and output for Tree" OFF)
+option(TEST_MODE "Enable diagnostic statistics and output for kbt" OFF)
 option(ARENA_POLL_DIAGNOSTICS "Count actual FIRST admission and Writer polling operations" OFF)
 
 # List implementation source files here. Replace or remove entries
@@ -272,13 +272,13 @@ find_program(PYTHON3_EXECUTABLE NAMES python3)
 if(PYTHON3_EXECUTABLE)
     add_test(NAME BloomModeSwitchTest
         COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bloom_mode_switch.py
-            $<TARGET_FILE:Tree> $<TARGET_FILE:dump_tool>)
+            $<TARGET_FILE:kbt> $<TARGET_FILE:dump_tool>)
     set_tests_properties(BloomModeSwitchTest PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
     add_test(NAME HighPrefixDecoderTest
         COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/high_prefix_format.py)
     add_test(NAME ClassifierEndToEndTest
         COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_classifier_end_to_end.py
-            $<TARGET_FILE:Tree>)
+            $<TARGET_FILE:kbt>)
     set_tests_properties(ClassifierEndToEndTest PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
 endif()
 
@@ -342,13 +342,13 @@ set_tests_properties(TreeAllocationFailureTest PROPERTIES TIMEOUT 30)
 add_test(NAME FirstSpillWriterTest COMMAND first_spill_writer_test)
 set_tests_properties(FirstSpillWriterTest PROPERTIES TIMEOUT 60)
 if(PYTHON3_EXECUTABLE)
-    add_test(NAME FirstPoolEndToEndTest COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_first_pool_end_to_end.py $<TARGET_FILE:Tree>)
+    add_test(NAME FirstPoolEndToEndTest COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_first_pool_end_to_end.py $<TARGET_FILE:kbt>)
     set_tests_properties(FirstPoolEndToEndTest PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
 endif()
 
 
 if(PYTHON3_EXECUTABLE)
-    add_test(NAME FirstPoolFailureTest COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_first_pool_failures.py $<TARGET_FILE:Tree>)
+    add_test(NAME FirstPoolFailureTest COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_first_pool_failures.py $<TARGET_FILE:kbt>)
     set_tests_properties(FirstPoolFailureTest PROPERTIES TIMEOUT 75 RUN_SERIAL TRUE)
 endif()
 

@@ -49,7 +49,7 @@ public:
 
     void start()
     {
-        fd_ = ::open((temp_dir + "high.final.tmp").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        fd_ = ::open((res_dir + "high.final.tmp").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd_ < 0) [[unlikely]]
         {
             std::cerr << "Failed to open high.bin\n";

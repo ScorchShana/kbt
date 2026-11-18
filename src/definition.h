@@ -186,8 +186,8 @@ alignas(CACHE_LINE_SIZE) inline std::atomic<uint64_t> sorted_kmer_count{ 0 };
 alignas(CACHE_LINE_SIZE) inline std::atomic<uint64_t> filtered_below_min_count{ 0 };
 alignas(CACHE_LINE_SIZE) inline std::atomic<uint64_t> filtered_above_max_count{ 0 };
 
-// 临时文件目录
-inline std::string temp_dir = "./tmp/";
+// 结果目录，包含中间文件
+inline std::string res_dir = "./tmp/";
 inline std::string mapping_filename = "mapping.tmp";
 
 // 布隆过滤器最大最小数目

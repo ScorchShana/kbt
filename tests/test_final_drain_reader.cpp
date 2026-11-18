@@ -51,8 +51,8 @@ namespace
     {
         const std::filesystem::path dir = std::filesystem::current_path() / name;
         std::filesystem::create_directories(dir);
-        temp_dir = dir.generic_string() + "/";
-        return temp_dir + "root_" + std::to_string(kRootId) + ".bin";
+        res_dir = dir.generic_string() + "/";
+        return res_dir + "root_" + std::to_string(kRootId) + ".bin";
     }
 
     std::string write_root_bin(const std::vector<Record>& records, const std::string& name)

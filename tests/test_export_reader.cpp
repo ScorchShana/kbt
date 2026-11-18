@@ -59,7 +59,7 @@ namespace
     {
         const std::filesystem::path dir = std::filesystem::current_path() / name;
         std::filesystem::create_directories(dir);
-        temp_dir = dir.generic_string() + "/";
+        res_dir = dir.generic_string() + "/";
     }
 
     void write_low_bin(uint32_t k, const std::vector<Kmer>& records, const std::string& name)
@@ -67,7 +67,7 @@ namespace
         set_test_temp_dir(name);
 
         // The tools still read the legacy layout; build that fixture directly.
-        std::ofstream output(temp_dir + "low.bin", std::ios::binary);
+        std::ofstream output(res_dir + "low.bin", std::ios::binary);
         const size_t full = k / 32;
         const size_t tail = ((k % 32) + 3) / 4;
         for (const auto& record : records) {
@@ -81,7 +81,7 @@ namespace
 
     std::vector<char> read_low_bin_bytes()
     {
-        std::ifstream input(temp_dir + "low.bin", std::ios::binary);
+        std::ifstream input(res_dir + "low.bin", std::ios::binary);
         return std::vector<char>(
             std::istreambuf_iterator<char>(input),
             std::istreambuf_iterator<char>());
@@ -116,7 +116,7 @@ namespace
         }
 
         ExportReader<kWords> reader(k);
-        reader.open(temp_dir + "low.bin");
+        reader.open(res_dir + "low.bin");
 
         std::vector<char> actual(expected.size());
         uint64_t total_read = 0;
@@ -168,7 +168,7 @@ namespace
         write_low_bin(k, input, "tmp_export_reader_k33");
 
         ExportReader<kWords> reader(k);
-        reader.open(temp_dir + "low.bin");
+        reader.open(res_dir + "low.bin");
         if (reader.finished())
         {
             std::cerr << "k=33 should not be finished after opening non-empty low.bin\n";
@@ -233,7 +233,7 @@ namespace
         write_low_bin(k, input, "tmp_export_reader_k64");
 
         ExportReader<kWords> reader(k);
-        reader.open(temp_dir + "low.bin");
+        reader.open(res_dir + "low.bin");
         if (reader.finished())
         {
             std::cerr << "k=64 should not be finished after opening non-empty low.bin\n";
@@ -278,7 +278,7 @@ namespace
         write_low_bin(k, {}, "tmp_export_reader_empty");
 
         ExportReader<kWords> reader(k);
-        reader.open(temp_dir + "low.bin");
+        reader.open(res_dir + "low.bin");
         if (!reader.finished())
         {
             std::cerr << "empty low.bin should be finished after open\n";
@@ -315,7 +315,7 @@ namespace
         write_low_bin(k, input, "tmp_export_reader_cross_buffer");
 
         ExportReader<kWords> reader(k);
-        reader.open(temp_dir + "low.bin");
+        reader.open(res_dir + "low.bin");
         if (reader.finished())
         {
             std::cerr << "cross-buffer reader should not be finished after opening non-empty low.bin\n";

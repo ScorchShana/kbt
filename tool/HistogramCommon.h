@@ -13,7 +13,7 @@
 
 struct Options
 {
-    std::string tmp_dir;
+    std::string res_dir;
     uint32_t k_len = 0;
     uint32_t count_max = 0;
     uint32_t count_bytes = 4;

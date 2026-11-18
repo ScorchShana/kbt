@@ -582,7 +582,7 @@ int process_main()
     // 初始化并构建 Parser 线程池，负责消费 FASTQ 读取器产生的数据，提取 k-mer 进行初步布隆过滤
     auto parser_thread_pool = std::make_shared<ParserThreadPool>(classifier_task_queues, global_classifier_task_queue.get(), pool.get(), parser_classifier_ring_pool.get(), parser_num);
     // 初始化导出写入器，用于将低频 k-mer 单线程安全落盘
-    auto export_writer = std::make_shared<ExportWriter>(export_ring_pool.get(), temp_dir + "low.pending.bin", ExportWriter::OutputKind::Pending, pool.get(), nullptr, ExportWriter::ReclaimLifetime::UntilExplicitStop);
+    auto export_writer = std::make_shared<ExportWriter>(export_ring_pool.get(), res_dir + "low.pending.bin", ExportWriter::OutputKind::Pending, pool.get(), nullptr, ExportWriter::ReclaimLifetime::UntilExplicitStop);
 
     // 正式计数阶段
     reader_parser_ring_pool->reset_producers(reader_num);
@@ -670,7 +670,7 @@ int process_main()
         std::unique_ptr<ExportWriter> low_writer;
         if (write_low) {
             export_ring_pool->reset_producers(1);
-            low_writer = std::make_unique<ExportWriter>(export_ring_pool.get(), temp_dir + "low.final.tmp", ExportWriter::OutputKind::FinalLow);
+            low_writer = std::make_unique<ExportWriter>(export_ring_pool.get(), res_dir + "low.final.tmp", ExportWriter::OutputKind::FinalLow);
             low_writer->start();
         }
 #ifdef TEST_MODE
@@ -695,7 +695,7 @@ int process_main()
             LowFrequencyReader low_reader(low_ring_pool);
             try {
             parser_thread_pool->start_low_pass(low_ring_pool, low_parser_num);
-            low_reader.start(temp_dir + "low.pending.bin", export_writer->shard_count());
+            low_reader.start(res_dir + "low.pending.bin", export_writer->shard_count());
             low_reader.join();
             runtime.check();
             parser_thread_pool->join();
@@ -714,7 +714,7 @@ int process_main()
             tree->mark_finish_export();
             low_writer->join();
         } else {
-            const int low_fd = ::open((temp_dir + "low.final.tmp").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            const int low_fd = ::open((res_dir + "low.final.tmp").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (low_fd < 0) {
                 std::perror("Failed to create empty final low file");
                 std::exit(-1);
@@ -746,11 +746,11 @@ int process_main()
         export_join_end = std::chrono::steady_clock::now();
 #endif
         for (uint64_t shard = 0; shard < export_writer->shard_count(); ++shard) {
-            const std::string path = temp_dir + "low.pending.bin." + std::to_string(shard);
+            const std::string path = res_dir + "low.pending.bin." + std::to_string(shard);
             if (::unlink(path.c_str()) != 0)
                 throw std::system_error(errno, std::generic_category(), "remove empty pending shard");
         }
-        const int low_fd = ::open((temp_dir + "low.final.tmp").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        const int low_fd = ::open((res_dir + "low.final.tmp").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (low_fd < 0)
             throw std::system_error(errno, std::generic_category(), "create empty final low output");
         if (::close(low_fd) != 0)
@@ -764,12 +764,12 @@ int process_main()
 #endif
     task_thread_pool->join();
     runtime.check();
-    if (::rename((temp_dir + "high.final.tmp").c_str(), (temp_dir + "high.bin").c_str()) != 0)
+    if (::rename((res_dir + "high.final.tmp").c_str(), (res_dir + "high.bin").c_str()) != 0)
         throw std::system_error(errno, std::generic_category(), "publish high output");
 #ifdef TEST_MODE
     const auto final_end = std::chrono::steady_clock::now();
 #endif
-    if (::rename((temp_dir + "low.final.tmp").c_str(), (temp_dir + "low.bin").c_str()) != 0) {
+    if (::rename((res_dir + "low.final.tmp").c_str(), (res_dir + "low.bin").c_str()) != 0) {
         if (!use_bloom_filter)
             throw std::system_error(errno, std::generic_category(), "publish empty low output");
         std::perror("Failed to publish final low file");
@@ -935,7 +935,7 @@ int main(int argc, char* argv[])
     if (argc < 6 || argc > 11)
     {
         std::cerr << "Usage: " << argv[0]
-            << " <fastq_file> <k_length> <n_thread> <memory_limit_gb> <temp_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [mapping_filename=mapping.tmp] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
+            << " <fastq_file> <k_length> <n_thread> <memory_limit_gb> <res_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [mapping_filename=mapping.tmp] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
         return 1;
     }
 
@@ -995,9 +995,9 @@ int main(int argc, char* argv[])
         if (memory_result.ec != std::errc{} || memory_result.ptr != memory_end)
             throw std::invalid_argument("invalid memory limit");
         pool_budget_bytes = main_pool_budget(memory_limit);
-        temp_dir = argv[5];
-        if (!temp_dir.empty() && temp_dir.back() != '/')
-            temp_dir += '/';
+        res_dir = argv[5];
+        if (!res_dir.empty() && res_dir.back() != '/')
+            res_dir += '/';
 
         if (argc >= 7)
         {
@@ -1047,14 +1047,14 @@ int main(int argc, char* argv[])
     catch (const std::exception&)
     {
         std::cerr << "Usage: " << argv[0]
-            << " <fastq_file> <k_length> <n_thread> <memory_limit_gb> <temp_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
+            << " <fastq_file> <k_length> <n_thread> <memory_limit_gb> <res_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
         return 1;
     }
 
     if (concurrent_hash_map_max_capacity <= 1 || concurrent_hash_map_min_capacity > concurrent_hash_map_max_capacity || count_max == 0)
     {
         std::cerr << "Usage: " << argv[0]
-            << " <fastq_file> <k_length> <n_thread> <memory_limit_gb> <temp_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
+            << " <fastq_file> <k_length> <n_thread> <memory_limit_gb> <res_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
         return 1;
     }
 
@@ -1067,7 +1067,7 @@ int main(int argc, char* argv[])
     std::cout << "RingPool peak bytes: " << ring_pool_budget().peak_bytes << "\nMain pool budget bytes: " << pool_budget_bytes << std::endl;
 #endif
 
-    int fd = ::open((temp_dir + "infos.bin").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = ::open((res_dir + "infos.bin").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd == -1) {
         std::cerr << "Open infos.bin failed : " << strerror(errno) << std::endl;
         return 1;

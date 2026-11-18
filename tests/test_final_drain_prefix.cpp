@@ -112,7 +112,7 @@ std::vector<uint8_t> read_file(const std::filesystem::path& path)
 
 void opaque_aggregation(const std::filesystem::path& dir)
 {
-    temp_dir = dir.string() + "/";
+    res_dir = dir.string() + "/";
     std::vector<uint8_t> expected(4 * 1024 * 1024 + 37);
     for (size_t i = 0; i < expected.size(); ++i) expected[i] = (i * 17) ^ (i >> 13);
     FinalDrainWriterThread sink(FINAL_DRAIN_RING_POOL_BLOCK_SIZE, 1);
@@ -131,7 +131,7 @@ void opaque_aggregation(const std::filesystem::path& dir)
 
 void multi_producer(const std::filesystem::path& dir)
 {
-    temp_dir = dir.string() + "/";
+    res_dir = dir.string() + "/";
     k_length = 36; count_max_bytes = 2;
     constexpr uint32_t producers = 4, records = 100000;
     FinalDrainWriterThread sink(FINAL_DRAIN_RING_POOL_BLOCK_SIZE, producers);
