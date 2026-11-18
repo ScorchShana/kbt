@@ -79,7 +79,7 @@ uint32_t parse_u32(const char* str) {
 }
 Options options(int argc, char** argv) {
     if (argc < 6 || argc > 9) throw std::runtime_error(
-        "Usage: dump_tool <precise/approximate> <tmp_dir> <max_threads> <max_memory_gb> <output_file> [min_freq] [max_freq] [--sort]");
+        "Usage: dump_tool <precise/approximate> <res_dir> <max_threads> <max_memory_gb> <output_file> [min_freq] [max_freq] [--sort]");
     Options o;
     if (std::strcmp(argv[1], "precise") == 0) o.precise = true;
     else if (std::strcmp(argv[1], "approximate")) throw std::runtime_error("invalid mode");

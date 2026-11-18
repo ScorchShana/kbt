@@ -37,13 +37,13 @@ namespace
     {
         if (argc < 3 || argc > 5)
         {
-            std::cerr << "Usage: histogram_tool <tmp_dir> <output_file> [min_freq=1] [max_freq=10000]"
+            std::cerr << "Usage: histogram_tool <res_dir> <output_file> [min_freq=1] [max_freq=10000]"
                 << std::endl;
             exit(-1);
         }
 
         Options options;
-        options.tmp_dir = with_trailing_slash(argv[1]);
+        options.res_dir = with_trailing_slash(argv[1]);
         options.output_file = argv[2];
         if (argc >= 4)
         {
