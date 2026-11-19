@@ -1,14 +1,31 @@
 # kbt
 
-`kbt` counts canonical k-mers in FASTQ files. A k-mer is a sequence of `k`
+`kbt` counts canonical k-mers in FASTQ or FASTA files. A k-mer is a sequence of `k`
 bases. A sequence and its reverse complement share one count.
 
 The program is written in C++20 for Linux and is designed for large datasets
-and machines with large amounts of RAM. It reads plain or gzip-compressed FASTQ
+and machines with large amounts of RAM. It reads plain or gzip-compressed FASTQ/FASTA
 files and saves compact binary results. Two tools turn those results into text:
 
 - `dump_tool` exports k-mer sequences and their counts.
 - `histogram_tool` reports how many distinct k-mers have each count.
+
+## Input formats
+
+Supported suffixes are `.fastq`, `.fq`, `.fastq.gz`, `.fq.gz`, `.fasta`, `.fa`,
+`.fasta.gz`, and `.fa.gz` (lowercase). Pass a single file, a comma-separated
+file list, or a directory. Directory entries are sorted by filename; hidden
+entries are skipped and subdirectories are not traversed.
+
+Each run accepts either FASTQ or FASTA, selected from the first input file.
+Aliases and compressed/uncompressed files may be mixed within that format;
+mixing FASTQ with FASTA or using unsupported suffixes is an error.
+Input files are assumed to exist and contain valid records.
+
+FASTA sequences may span multiple lines (LF or CRLF). Line wrapping does not
+break a sequence; record and file boundaries do. FASTA uses `avgQuality = 63`
+(the existing quality representation for Q30). Pre-reading, reader thread
+allocation, and downstream k-mer parsing use the same policies as FASTQ.
 
 ## Build
 

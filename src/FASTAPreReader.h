@@ -1,0 +1,337 @@
+#ifndef FASTA_PRE_READER_HEADER
+#define FASTA_PRE_READER_HEADER
+
+#include "definition.h"
+#include "RingMemoryPool.h"
+#include "SPSCRingQueue.h"
+
+#include <string>
+#include <cassert>
+#include <cstdio>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <vector>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <utility>
+#include <iostream>
+#include <algorithm>
+#include <zlib.h>
+#include <thread>
+#include <atomic>
+
+class FASTAPreReader
+{
+
+    static constexpr uint64_t kNoNewlineInBlock = static_cast<uint64_t>(-1);
+    static constexpr uint64_t PIPELINE_QUEUE_CAPACITY = 16;
+
+    int fd_ = -1;
+    ssize_t file_size_ = 0;
+    std::atomic<ssize_t> have_read_{0};
+    ssize_t need_read_ = 0;
+    uint64_t chunk_size_;
+    std::vector<std::string> filenames_;
+    size_t file_index_ = 0;
+    RingMemoryPool<READER_PARSER_RING_MEMORY_POOL_CAPACITY>* ring_memory_pool_ptr_;
+    char* file_buffer = nullptr; // Borrowed from pipeline_buffers_.
+    char left_buffer_[128];
+    size_t left_buffer_size_ = 0;
+    bool is_gz_file = false;
+    gzFile gzfile_ = nullptr;
+    uint64_t sampled_plain_bytes_ = 0;
+    uint64_t sampled_gz_decompressed_bytes_ = 0;
+    uint64_t sampled_gz_compressed_bytes_ = 0;
+
+    std::vector<char*> pipeline_buffers_;
+    SPSCRingQueue<::content_type, PIPELINE_QUEUE_CAPACITY> pipeline_data_queue_;
+    SPSCRingQueue<char*, PIPELINE_QUEUE_CAPACITY> pipeline_free_queue_;
+    std::thread io_thread_;
+
+public:
+    int k;
+
+    explicit FASTAPreReader(const std::vector<std::string>& filenames, uint64_t chunk_size, RingMemoryPool<READER_PARSER_RING_MEMORY_POOL_CAPACITY>* in_ring_memory_pool_ptr)
+        : chunk_size_(chunk_size), filenames_(filenames), ring_memory_pool_ptr_(in_ring_memory_pool_ptr),
+        k(k_length)
+    {
+        assert(ring_memory_pool_ptr_ != nullptr);
+        assert(ring_memory_pool_ptr_->blockSize() > 1024);
+        if (filenames_.empty()) { std::cerr << "No input files" << std::endl; throw std::runtime_error("input I/O failed"); }
+
+        pipeline_buffers_.resize(PIPELINE_QUEUE_CAPACITY);
+        for (uint64_t i = 0; i < PIPELINE_QUEUE_CAPACITY; ++i)
+        {
+            pipeline_buffers_[i] = static_cast<char*>(std::aligned_alloc(4096, chunk_size_));
+            if (!pipeline_buffers_[i]) {
+                for (char* buffer : pipeline_buffers_) std::free(buffer);
+                throw std::bad_alloc();
+            }
+            pipeline_free_queue_.enqueue(pipeline_buffers_[i]);
+        }
+    }
+
+    ~FASTAPreReader()
+    {
+        RunState::fail_on_unwind();
+        if (io_thread_.joinable()) io_thread_.join();
+        if (gzfile_ != nullptr) gzclose(gzfile_);
+        if (fd_ != -1) ::close(fd_);
+        for (char* buf : pipeline_buffers_) if (buf) std::free(buf);
+    }
+
+    void pre_read()
+    {
+        const ssize_t per_file_limit = (filenames_.size() == 1)
+            ? static_cast<ssize_t>(256U * 1024 * 1024)
+            : static_cast<ssize_t>(128U * 1024 * 1024);
+
+        for (file_index_ = 0; file_index_ < filenames_.size(); ++file_index_)
+        {
+            open_current_file();
+            if (is_gz_file)
+                need_read_ = per_file_limit;
+            else
+                need_read_ = std::min(file_size_, per_file_limit);
+            have_read_.store(0, std::memory_order_relaxed);
+
+            io_thread_ = std::thread(&FASTAPreReader::io_thread_func, this);
+
+            ::content_type current_input{nullptr, 0};
+            bool have_input = false;
+            try {
+                parse_loop(current_input, have_input);
+            } catch (...) {
+                if (RunState::active) RunState::active->fail(std::current_exception(), "FASTA pre-reader");
+                io_thread_.join();
+                throw;
+            }
+
+            io_thread_.join();
+            if (have_input && current_input.data != nullptr)
+                pipeline_free_queue_.enqueue(current_input.data);
+            file_buffer = nullptr;
+
+            close_current_file();
+            left_buffer_size_ = 0;
+        }
+
+        ring_memory_pool_ptr_->producer_set_finished();
+    }
+
+    uint64_t get_sampled_plain_bytes() const noexcept { return sampled_plain_bytes_; }
+    uint64_t get_sampled_gz_decompressed_bytes() const noexcept { return sampled_gz_decompressed_bytes_; }
+    uint64_t get_sampled_gz_compressed_bytes() const noexcept { return sampled_gz_compressed_bytes_; }
+
+private:
+    void open_current_file()
+    {
+        const std::string& fname = filenames_[file_index_];
+        std::cout << "FASTAPreReader: " << (file_index_ + 1) << "/"
+                  << filenames_.size() << ": " << fname << std::endl;
+        fd_ = ::open(fname.data(), O_RDONLY);
+        if (fd_ == -1) { std::cerr << "Failed to open" << std::endl; throw std::runtime_error("input I/O failed"); }
+        struct stat st;
+        if (fstat(fd_, &st) == -1) { std::cerr << "Failed to stat" << std::endl; throw std::runtime_error("input I/O failed"); }
+        file_size_ = st.st_size;
+
+        unsigned char buf[2];
+        ssize_t n = ::read(fd_, buf, 2);
+        is_gz_file = (n == 2 && buf[0] == 0x1F && buf[1] == 0x8B);
+        if (lseek(fd_, 0, SEEK_SET) == -1) { std::cerr << "Failed to seek" << std::endl; throw std::runtime_error("input I/O failed"); }
+
+        if (is_gz_file)
+        {
+            gzfile_ = gzopen(fname.c_str(), "rb");
+            if (gzfile_ == nullptr) { std::cerr << "Failed to open gzip" << std::endl; throw std::runtime_error("input I/O failed"); }
+        }
+        else
+        {
+            posix_fadvise(fd_, 0, 0, POSIX_FADV_RANDOM);
+        }
+    }
+
+    void close_current_file()
+    {
+        if (gzfile_ != nullptr)
+        {
+            // gzip 每次从文件开头读取, gztell 即累计解压后字节数,
+            // gzoffset 即实际读取的压缩字节数
+            const z_off_t decompressed = gztell(gzfile_);
+            const z_off_t compressed = gzoffset(gzfile_);
+            if (decompressed > 0) sampled_gz_decompressed_bytes_ += static_cast<uint64_t>(decompressed);
+            if (compressed > 0) sampled_gz_compressed_bytes_ += static_cast<uint64_t>(compressed);
+            gzclose(gzfile_);
+            gzfile_ = nullptr;
+        }
+        if (fd_ != -1)
+        {
+            if (!is_gz_file)
+                sampled_plain_bytes_ += have_read_.load(std::memory_order_relaxed);
+            ::close(fd_);
+            fd_ = -1;
+        }
+        file_size_ = 0;
+    }
+
+    void io_thread_func()
+    {
+        run_worker("pre-reader I/O", [&] {
+
+        while (true)
+        {
+            char* buf = nullptr;
+            pipeline_free_queue_.dequeue(buf);
+
+            ssize_t bytes_read;
+            if (is_gz_file)
+                bytes_read = gzread(gzfile_, buf, static_cast<unsigned int>(chunk_size_));
+            else
+                bytes_read = ::read(fd_, buf, chunk_size_);
+
+            if (bytes_read < 0) [[unlikely]] { std::cerr << "Failed to read" << std::endl; throw std::runtime_error("input I/O failed"); }
+            if (bytes_read == 0)
+            {
+                // Only the parser returns buffers to the SPSC free queue.
+                pipeline_data_queue_.enqueue({buf, 0});
+                pipeline_data_queue_.enqueue({nullptr, 0});
+                break;
+            }
+
+            have_read_.fetch_add(static_cast<ssize_t>(bytes_read), std::memory_order_relaxed);
+            pipeline_data_queue_.enqueue({buf, static_cast<uint64_t>(bytes_read)});
+
+            if (have_read_.load(std::memory_order_relaxed) >= need_read_)
+            {
+                pipeline_data_queue_.enqueue({nullptr, 0});
+                break;
+            }
+        }
+
+        });
+    }
+
+    void parse_loop(::content_type& current_input, bool& have_input)
+    {
+        assert(ring_memory_pool_ptr_ != nullptr);
+        char* block_ptr = nullptr;
+        const uint64_t block_size = ring_memory_pool_ptr_->blockSize();
+
+        const uint64_t overlap = (k > 1) ? static_cast<uint64_t>(k - 1) : 0;
+        uint64_t write_size = 0, last_newline_pos = kNoNewlineInBlock;
+        bool has_block = false;
+        uint64_t input_pos = 0, input_size = 0;
+        bool eof = false;
+        bool line_start = true, in_header = false, have_record = false;
+
+        while (true)
+        {
+            if (!has_block) acquire_block(block_ptr, write_size, last_newline_pos, has_block);
+
+            if (input_pos >= input_size && !eof)
+            {
+                if (have_input && current_input.data != nullptr)
+                {
+                    pipeline_free_queue_.enqueue(current_input.data);
+                    have_input = false;
+                }
+                pipeline_data_queue_.dequeue(current_input);
+                if (current_input.data == nullptr) eof = true;
+                else { have_input = true; file_buffer = current_input.data; input_pos = 0; input_size = current_input.length; }
+            }
+
+            if (input_pos >= input_size) {
+                if (eof) {
+                    if (have_record) {
+                        if (write_size == block_size) {
+                            left_buffer_size_ = 0;
+                            publish_current_block(block_ptr, write_size, last_newline_pos, has_block);
+                            acquire_block(block_ptr, write_size, last_newline_pos, has_block);
+                        }
+                        block_ptr[write_size++] = '\n';
+                    }
+                    publish_current_block(block_ptr, write_size, last_newline_pos, has_block);
+                    break;
+                }
+                continue;
+            }
+
+            const char* input_begin = file_buffer;
+            if (line_start && input_begin[input_pos] == '>')
+            {
+                if (have_record)
+                {
+                    // A record boundary needs no overlap, even at a full block.
+                    if (write_size == block_size) {
+                        left_buffer_size_ = 0;
+                        publish_current_block(block_ptr, write_size, last_newline_pos, has_block);
+                        acquire_block(block_ptr, write_size, last_newline_pos, has_block);
+                    }
+                    last_newline_pos = write_size;
+                    block_ptr[write_size++] = '\n';
+                }
+                have_record = true;
+                in_header = true;
+            }
+            const char* cur = input_begin + input_pos;
+            const char* nl = static_cast<const char*>(std::memchr(cur, '\n', input_size - input_pos));
+            const uint64_t line_bytes = nl ? static_cast<uint64_t>(nl - cur) : input_size - input_pos;
+            if (!in_header)
+            {
+                // CR can be the final byte of an input chunk; do not emit it.
+                const uint64_t seq_len = line_bytes - (line_bytes > 0 && cur[line_bytes - 1] == '\r');
+                uint64_t copied = 0;
+                while (copied < seq_len)
+                {
+                    if (write_size == block_size) {
+                        store_overlap_from_block_end(block_ptr, write_size, last_newline_pos, overlap);
+                        publish_current_block(block_ptr, write_size, last_newline_pos, has_block);
+                        acquire_block(block_ptr, write_size, last_newline_pos, has_block);
+                    }
+                    const uint64_t take = std::min(seq_len - copied, block_size - write_size);
+                    std::memcpy(block_ptr + write_size, cur + copied, take);
+                    copied += take;
+                    write_size += take;
+                }
+            }
+            input_pos += line_bytes + (nl != nullptr);
+            line_start = nl != nullptr;
+            if (line_start) in_header = false;
+        }
+    }
+
+    void acquire_block(char*& block_ptr, uint64_t& write_size, uint64_t& last_newline_pos, bool& has_block)
+    {
+        ring_memory_pool_ptr_->producer_dequeue(block_ptr);
+        has_block = true; write_size = 0; last_newline_pos = kNoNewlineInBlock;
+        if (left_buffer_size_ > 0) { std::memcpy(block_ptr, left_buffer_, left_buffer_size_); write_size = left_buffer_size_; left_buffer_size_ = 0; }
+    }
+
+    inline void store_overlap_from_block_end(const char* block_ptr, uint64_t write_size, uint64_t last_newline_pos, uint64_t overlap)
+    {
+        left_buffer_size_ = 0;
+        if (overlap == 0 || write_size == 0) return;
+        const uint64_t keep = (write_size < overlap) ? write_size : overlap;
+        const uint64_t start = write_size - keep;
+        if (last_newline_pos != kNoNewlineInBlock && last_newline_pos >= start) {
+            const uint64_t kp = write_size - (last_newline_pos + 1);
+            if (kp > 0) { std::memcpy(left_buffer_, block_ptr + last_newline_pos + 1, kp); left_buffer_size_ = static_cast<size_t>(kp); }
+            return;
+        }
+        std::memcpy(left_buffer_, block_ptr + start, keep);
+        left_buffer_size_ = static_cast<size_t>(keep);
+    }
+
+    inline void publish_current_block(char*& block_ptr, uint64_t& write_size, uint64_t& last_newline_pos, bool& has_block)
+    {
+        if (!has_block) return;
+        if (write_size > 0) ring_memory_pool_ptr_->producer_enqueue({ block_ptr, write_size });
+        else ring_memory_pool_ptr_->consumer_enqueue(block_ptr);
+        has_block = false; block_ptr = nullptr; write_size = 0; last_newline_pos = kNoNewlineInBlock;
+    }
+};
+
+#endif

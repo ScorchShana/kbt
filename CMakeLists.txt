@@ -160,6 +160,13 @@ target_link_libraries(fastq_pre_reader_test zlib rt pthread atomic)
 add_test(NAME FastqPreReaderTest COMMAND fastq_pre_reader_test)
 set_tests_properties(FastqPreReaderTest PROPERTIES TIMEOUT 30)
 
+foreach(READER IN ITEMS reader pre_reader)
+    add_executable(fasta_${READER}_test tests/test_fasta_${READER}.cpp)
+    target_link_libraries(fasta_${READER}_test zlib rt pthread atomic)
+    add_test(NAME fasta_${READER}_test COMMAND fasta_${READER}_test)
+    set_tests_properties(fasta_${READER}_test PROPERTIES TIMEOUT 60)
+endforeach()
+
 add_executable(final_drain_reader_test tests/test_final_drain_reader.cpp)
 target_link_libraries(final_drain_reader_test rt)
 target_link_libraries(final_drain_reader_test pthread)
@@ -270,6 +277,10 @@ add_test(NAME GetKmerTest COMMAND get_kmer_test)
 set_tests_properties(GetKmerTest PROPERTIES TIMEOUT 30)
 find_program(PYTHON3_EXECUTABLE NAMES python3)
 if(PYTHON3_EXECUTABLE)
+    add_test(NAME FastaEndToEndTest
+        COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fasta_end_to_end.py
+            $<TARGET_FILE:kbt>)
+    set_tests_properties(FastaEndToEndTest PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
     add_test(NAME BloomModeSwitchTest
         COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bloom_mode_switch.py
             $<TARGET_FILE:kbt> $<TARGET_FILE:dump_tool>)

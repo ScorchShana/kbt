@@ -4,6 +4,8 @@
 #include "MPMCRingQueue.h"
 #include "GetKmer.h"
 #include "FastqReader.h"
+#include "FASTAReader.h"
+#include "FASTAPreReader.h"
 #include "ParserThreadPool.h"
 #include "ExportWriter.h"
 #include "ClassifierThreadPool.h"
@@ -24,6 +26,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <memory>
 #include <limits>
 #include <vector>
@@ -45,6 +48,7 @@ uint32_t n_thread;     // 允许使用的总线程数
 uint64_t memory_limit; // 全局最大内存限制，单位为 GB
 uint64_t estimated_file_size;    // 输入 FASTQ 文件的估计大小，单位为字节
 std::vector<std::string> filenames;
+bool fasta_input = false;
 size_t pool_budget_bytes = 0;
 bool first_cache_enabled = true;
 bool use_bloom_filter = true;
@@ -52,7 +56,7 @@ bool use_bloom_filter = true;
 void get_MAX_BLOOM_FILTER_CAPACITY()
 {
 #ifdef TEST_MODE
-    std::cout << "Average quality score: " << avgQuality << std::endl;
+    std::cout << "Average quality score: " << static_cast<unsigned int>(avgQuality) << std::endl;
 #endif
     const double error_rate = std::pow(10.0, -(avgQuality - 33) * 0.1);
     const uint64_t quarter_memory_average_capacity = pool_budget_bytes / 4 / (2 * sizeof(std::atomic<uint64_t>)) / (1ULL << (2 * ROOT_BASES));
@@ -361,9 +365,16 @@ int process_main()
         pre_reader_files[i % pre_reader_num].push_back(filenames[i]);
 
     std::vector<std::unique_ptr<FastqPreReader>> pre_readers;
-    pre_readers.reserve(pre_reader_num);
-    for (uint32_t i = 0; i < pre_reader_num; ++i)
-        pre_readers.emplace_back(std::make_unique<FastqPreReader>(pre_reader_files[i], FASTQ_FILE_CHUNK_SIZE, reader_parser_ring_pool.get()));
+    std::vector<std::unique_ptr<FASTAPreReader>> fasta_pre_readers;
+    if (fasta_input) {
+        fasta_pre_readers.reserve(pre_reader_num);
+        for (uint32_t i = 0; i < pre_reader_num; ++i)
+            fasta_pre_readers.emplace_back(std::make_unique<FASTAPreReader>(pre_reader_files[i], FASTQ_FILE_CHUNK_SIZE, reader_parser_ring_pool.get()));
+    } else {
+        pre_readers.reserve(pre_reader_num);
+        for (uint32_t i = 0; i < pre_reader_num; ++i)
+            pre_readers.emplace_back(std::make_unique<FastqPreReader>(pre_reader_files[i], FASTQ_FILE_CHUNK_SIZE, reader_parser_ring_pool.get()));
+    }
 
     std::vector<std::thread> pre_reader_threads, pre_parser_threads, prefix_counter_threads;
     pre_reader_threads.reserve(pre_reader_num);
@@ -379,6 +390,8 @@ int process_main()
 
     for (auto& pr : pre_readers)
         pre_reader_threads.emplace_back([&pr] { run_worker("pre-reader", [&] { pr->pre_read(); }); });
+    for (auto& pr : fasta_pre_readers)
+        pre_reader_threads.emplace_back([&pr] { run_worker("FASTA pre-reader", [&] { pr->pre_read(); }); });
 
 
     for (uint32_t i = 0; i < pre_parser_num; ++i)
@@ -424,7 +437,9 @@ int process_main()
         quality_sum += pr->get_quality_sum();
         quality_count += pr->get_quality_count();
     }
-    if (quality_count > 0)
+    if (fasta_input)
+        avgQuality = 63;
+    else if (quality_count > 0)
         avgQuality = static_cast<uint8_t>(quality_sum / quality_count);
 
     for (auto& t : pre_parser_threads)
@@ -450,9 +465,16 @@ int process_main()
             sampled_gz_decompressed_bytes += pr->get_sampled_gz_decompressed_bytes();
             sampled_gz_compressed_bytes += pr->get_sampled_gz_compressed_bytes();
         }
+        for (auto& pr : fasta_pre_readers)
+        {
+            sampled_plain_bytes += pr->get_sampled_plain_bytes();
+            sampled_gz_decompressed_bytes += pr->get_sampled_gz_decompressed_bytes();
+            sampled_gz_compressed_bytes += pr->get_sampled_gz_compressed_bytes();
+        }
 
         // 预读线程已结束，质量值和采样统计已保存。
         pre_readers.clear();
+        fasta_pre_readers.clear();
 
         // 根据采样得到的实际解压比重新估计完整 FASTQ 大小(替代原来的 *4)
         uint64_t total_plain_file_size = 0;
@@ -491,6 +513,7 @@ int process_main()
                 (static_cast<__uint128_t>(sampled_kmer_count) * estimated_file_size) / sampled_raw_bytes);
     } else {
         pre_readers.clear();
+        fasta_pre_readers.clear();
     }
 
     uint64_t average_count = 0;
@@ -591,7 +614,12 @@ int process_main()
     layer_queues->initialize_final_drain_queue(prefix_counts, tree->root_nodes);
 
     // 初始化 FASTQ 读取器，将大文件分块读取并送入 ring_pool 用作流水线起点
-    auto reader_pool = std::make_unique<ReaderThreadPool>(filenames, FASTQ_FILE_CHUNK_SIZE, reader_num, reader_parser_ring_pool.get());
+    std::unique_ptr<FastqReaderThreadPool> reader_pool;
+    std::unique_ptr<FASTAReaderThreadPool> fasta_reader_pool;
+    if (fasta_input)
+        fasta_reader_pool = std::make_unique<FASTAReaderThreadPool>(filenames, FASTQ_FILE_CHUNK_SIZE, reader_num, reader_parser_ring_pool.get());
+    else
+        reader_pool = std::make_unique<FastqReaderThreadPool>(filenames, FASTQ_FILE_CHUNK_SIZE, reader_num, reader_parser_ring_pool.get());
 
 #ifdef TEST_MODE
     const auto init_end = std::chrono::steady_clock::now();
@@ -605,14 +633,19 @@ int process_main()
     task_thread_pool->start();
     classifier_thread_pool->start();
     parser_thread_pool->start(*reader_parser_ring_pool);
-    reader_pool->start();
-
-    reader_pool->join();
+    if (fasta_input) {
+        fasta_reader_pool->start();
+        fasta_reader_pool->join();
+    } else {
+        reader_pool->start();
+        reader_pool->join();
+    }
     runtime.check();
 #ifdef TEST_MODE
     const auto read_end = std::chrono::steady_clock::now();
 #endif
     reader_pool.reset();
+    fasta_reader_pool.reset();
 
     // 阻塞等待 Parser 线程将所有文件块解析并生成 k-mer 完成
     parser_thread_pool->join();
@@ -935,7 +968,7 @@ int main(int argc, char* argv[])
     if (argc < 6 || argc > 11)
     {
         std::cerr << "Usage: " << argv[0]
-            << " <fastq_file> <k_length> <n_thread> <memory_limit_gb> <res_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [mapping_filename=mapping.tmp] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
+            << " <fastq_or_fasta_input> <k_length> <n_thread> <memory_limit_gb> <res_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [mapping_filename=mapping.tmp] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
         return 1;
     }
 
@@ -979,6 +1012,18 @@ int main(int argc, char* argv[])
                 if (!arg.empty())
                     filenames.push_back(arg);
             }
+        }
+        if (filenames.empty()) throw std::invalid_argument("No input files");
+        for (size_t i = 0; i < filenames.size(); ++i) {
+            std::string_view name = filenames[i];
+            if (name.ends_with(".gz")) name.remove_suffix(3);
+            const bool is_fasta = name.ends_with(".fa") || name.ends_with(".fasta");
+            const bool is_fastq = name.ends_with(".fq") || name.ends_with(".fastq");
+            if (!is_fasta && !is_fastq)
+                throw std::invalid_argument("Unsupported input extension: " + filenames[i]);
+            if (i == 0) fasta_input = is_fasta;
+            else if (fasta_input != is_fasta)
+                throw std::invalid_argument("Mixed FASTQ/FASTA input: " + filenames[i]);
         }
         const auto parse_count = [](const char* text) -> uint32_t {
             uint32_t value = 0;
@@ -1032,7 +1077,7 @@ int main(int argc, char* argv[])
         }
 
         std::cout << "Input parameters:" << std::endl;
-        std::cout << "  Fastq files (" << filenames.size() << "):" << std::endl;
+        std::cout << (fasta_input ? "  FASTA files (" : "  FASTQ files (") << filenames.size() << "):" << std::endl;
         for (const auto& f : filenames)
             std::cout << "    " << f << std::endl;
         std::cout << "  k-mer length: " << k_length << std::endl;
@@ -1044,17 +1089,18 @@ int main(int argc, char* argv[])
         std::cout << "  Count max: " << count_max << std::endl;
         std::cout << "  Bloom filter: " << (use_bloom_filter ? "on" : "off") << std::endl;
     }
-    catch (const std::exception&)
+    catch (const std::exception& error)
     {
+        std::cerr << error.what() << std::endl;
         std::cerr << "Usage: " << argv[0]
-            << " <fastq_file> <k_length> <n_thread> <memory_limit_gb> <res_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
+            << " <fastq_or_fasta_input> <k_length> <n_thread> <memory_limit_gb> <res_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
         return 1;
     }
 
     if (concurrent_hash_map_max_capacity <= 1 || concurrent_hash_map_min_capacity > concurrent_hash_map_max_capacity || count_max == 0)
     {
         std::cerr << "Usage: " << argv[0]
-            << " <fastq_file> <k_length> <n_thread> <memory_limit_gb> <res_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
+            << " <fastq_or_fasta_input> <k_length> <n_thread> <memory_limit_gb> <res_dir> [map_capacity] [filter_min=2] [filter_max=4294967295] [count_max=255] [--bloom=on|off] [--first-cache=auto|off] [--first-reclaim=spill]" << std::endl;
         return 1;
     }
 
