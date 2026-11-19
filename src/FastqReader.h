@@ -341,7 +341,7 @@ private:
     }
 };
 
-class ReaderThreadPool
+class FastqReaderThreadPool
 {
     using content_type = std::pair<char*, uint64_t>;
 
@@ -380,7 +380,7 @@ public:
     inline thread_local static uint64_t enqueue_spin_time = 0;
 #endif
 
-    explicit ReaderThreadPool(
+    explicit FastqReaderThreadPool(
         const std::vector<std::string>& filenames,
         uint64_t chunk_size,
         uint32_t reader_count,
@@ -397,13 +397,13 @@ public:
         threads_.reserve(reader_count_);
     }
 
-    ~ReaderThreadPool()
+    ~FastqReaderThreadPool()
     {
         RunState::fail_on_unwind();
         join();
 #ifdef TEST_MODE
-        std::cout << "ReaderThreadPool: total dequeue spin time: " << total_dequeue_spin_time.load(std::memory_order_relaxed) << std::endl;
-        std::cout << "ReaderThreadPool: total enqueue spin time: " << total_enqueue_spin_time.load(std::memory_order_relaxed) << std::endl;
+        std::cout << "FastqReaderThreadPool: total dequeue spin time: " << total_dequeue_spin_time.load(std::memory_order_relaxed) << std::endl;
+        std::cout << "FastqReaderThreadPool: total enqueue spin time: " << total_enqueue_spin_time.load(std::memory_order_relaxed) << std::endl;
 #endif
     }
 

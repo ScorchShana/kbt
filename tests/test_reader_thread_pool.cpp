@@ -68,7 +68,7 @@ namespace
 
         ReaderPool pool(output_block_size, 1);
         k_length = kLength;
-        ReaderThreadPool reader(filenames, input_chunk_size, 1, &pool);
+        FastqReaderThreadPool reader(filenames, input_chunk_size, 1, &pool);
 
         reader.start();
         reader.join();
@@ -250,6 +250,6 @@ int main()
         return 1;
     }
 
-    std::cout << "ReaderThreadPool tests passed\n";
+    std::cout << "FastqReaderThreadPool tests passed\n";
     return 0;
 }
