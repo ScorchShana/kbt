@@ -51,12 +51,21 @@ The build uses `-march=native` to optimize for the build machine's CPU.
 
 ## Quick start
 
+The SPAdes self-test sample contains 2,054 *E. coli* reads and is about 115 KiB
+compressed. Download it as `reads.fastq.gz` to run the commands below.
+[SPAdes test dataset](https://github.com/ablab/spades/blob/81ede0b8174b7044f044ffd75854641812ad28f6/src/projects/spades/test_dataset/ecoli_1K_1.fq.gz)
+
+```sh
+curl -fL -H 'Accept: application/vnd.github.raw+json' -o reads.fastq.gz \
+  https://api.github.com/repos/ablab/spades/git/blobs/e14b2228466beffde34aa9f2f189eec3f9d94e61
+```
+
 Create a directory for the binary results, then count 31-mers using a thread
-setting of 16 and a memory budget of 64 GiB:
+setting of 6 and a memory budget of 2 GiB:
 
 ```sh
 mkdir -p results
-./build/kbt reads.fastq.gz 31 16 64 results
+./build/kbt reads.fastq.gz 31 6 2 results
 ```
 
 By default, `kbt` keeps k-mers with a count of at least 2 and caps each count at
@@ -77,10 +86,12 @@ and set `filter_min` to 1:
 
 ```sh
 mkdir -p results-all
-./build/kbt reads.fastq.gz 31 16 64 results-all 1024 1
+./build/kbt reads.fastq.gz 31 6 2 results-all 1024 1
 ./build/dump_tool precise results-all 4 1 kmers-all.tsv 1 4294967295 --sort
 ./build/histogram_tool results-all histogram-all.tsv 1 255
 ```
+
+For this sample, `kmers.tsv` has 975 rows and `kmers-all.tsv` has 977 rows.
 
 ## Counting options
 
